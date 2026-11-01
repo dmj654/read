@@ -70,6 +70,9 @@ xcodebuild test \
   -resultBundlePath "$OUT/Result-iPhone.xcresult" \
   -enableCodeCoverage YES \
   -parallel-testing-enabled NO \
+  -test-timeouts-enabled YES \
+  -default-test-execution-time-allowance 120 \
+  -maximum-test-execution-time-allowance 600 \
   ${ONLY_ARGS[@]+"${ONLY_ARGS[@]}"} \
   -quiet \
   || fatal "iPhone 目的地测试失败：用 Xcode 打开 $OUT/Result-iPhone.xcresult 查看失败用例"
@@ -87,6 +90,9 @@ xcodebuild test \
   -resultBundlePath "$OUT/Result-iPad.xcresult" \
   -enableCodeCoverage NO \
   -parallel-testing-enabled NO \
+  -test-timeouts-enabled YES \
+  -default-test-execution-time-allowance 120 \
+  -maximum-test-execution-time-allowance 600 \
   ${ONLY_ARGS[@]+"${ONLY_ARGS[@]}"} \
   -quiet \
   || fatal "iPad 目的地测试失败：用 Xcode 打开 $OUT/Result-iPad.xcresult 查看失败用例"

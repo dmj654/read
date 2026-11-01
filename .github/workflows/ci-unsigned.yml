@@ -34,7 +34,7 @@ jobs:
   unsigned-package:
     name: 测试 · 未签名 IPA
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 45
 
     steps:
       - name: Checkout

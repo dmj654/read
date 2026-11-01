@@ -157,6 +157,39 @@ enum NetworkSessionFactory {
     }
 }
 
+/// 异步信号量：用 actor + 等待队列实现并发闸门。
+///
+/// **不要**用 `DispatchSemaphore`：`wait()` 会阻塞 Swift 并发协作线程池中的线程。
+/// 当并发任务数大于闸门值（例如 20 个任务 / 上限 4）时，多出来的任务会占满线程池，
+/// 而续体（continuation）又必须回到线程池才能恢复——形成永久死锁，
+/// 在 CI 上表现为测试进程挂死（`testConcurrencyLimit` 即为此例）。
+actor AsyncSemaphore {
+    private var available: Int
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(value: Int) {
+        self.available = max(0, value)
+    }
+
+    func wait() async {
+        if available > 0 {
+            available -= 1
+            return
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            waiters.append(continuation)
+        }
+    }
+
+    func signal() {
+        if waiters.isEmpty {
+            available += 1
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
+
 /// 统一网络服务：异步封装 + Cookie + 重试退避 + 并发上限 + 本地日志（P0.7–P0.11）。
 final class NetworkService: @unchecked Sendable {
     private let session: URLSessionProtocol
@@ -164,7 +197,7 @@ final class NetworkService: @unchecked Sendable {
     private let logger: NetworkLogger
     private let maxConcurrency: Int
     private let maxRetry: Int
-    private let semaphore: DispatchSemaphore
+    private let limiter: AsyncSemaphore
 
     init(session: URLSessionProtocol = URLSession.shared,
          cookieJar: CookieJar = CookieJar(),
@@ -176,13 +209,24 @@ final class NetworkService: @unchecked Sendable {
         self.logger = logger
         self.maxConcurrency = maxConcurrency
         self.maxRetry = maxRetry
-        self.semaphore = DispatchSemaphore(value: maxConcurrency)
+        self.limiter = AsyncSemaphore(value: max(maxConcurrency, 1))
     }
 
     func data(for request: Request) async throws -> (Data, HTTPURLResponse) {
-        return try await withRetry(maxRetry) {
-            self.semaphore.wait()
-            defer { self.semaphore.signal() }
+        await limiter.wait()
+        do {
+            let value = try await perform(request)
+            await limiter.signal()
+            return value
+        } catch {
+            await limiter.signal()
+            throw error
+        }
+    }
+
+    /// 实际发起请求（含重试退避）。并发闸门的收放由 `data(for:)` 负责。
+    private func perform(_ request: Request) async throws -> (Data, HTTPURLResponse) {
+        try await withRetry(maxRetry) {
             let urlRequest = self.buildURLRequest(from: request)
             let (data, response) = try await self.session.data(for: urlRequest)
             guard let http = response as? HTTPURLResponse else {
