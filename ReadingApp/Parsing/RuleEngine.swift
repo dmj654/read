@@ -215,6 +215,15 @@ enum RuleEngine {
     // P0.17 JS 注入（JavaScriptCore 沙箱，无 DOM / 网络）
     private static func runJS(_ code: String, result: String) -> String? {
         guard let context = JSContext(virtualMachine: nil) else { return nil }
+
+        // 关键：未设置 `exceptionHandler` 时，脚本的语法/运行时错误会以 **Objective-C 异常**
+        // 的形式从 `evaluateScript` 抛出。Swift 无法 catch ObjC 异常，进程会直接崩溃
+        // （CI 上表现为 "Crash: ReadingApp at RuleEngineTests.testJSInvalidDoesNotCrash"，
+        // 并连带把同批次其他用例判为崩溃）。设置处理器后，出错时返回 nil 而非崩溃。
+        context.exceptionHandler = { _, exception in
+            _ = exception?.toString()
+        }
+
         context.setObject(result, forKeyedSubscript: "result" as NSString)
         context.setObject(NSObject(), forKeyedSubscript: "java" as NSString) // 最小桩，无实际方法
         guard let value = context.evaluateScript(code) else {
