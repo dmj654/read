@@ -8,7 +8,9 @@ enum DownloadEvent: Sendable {
 }
 
 /// 下载执行协议：管理器的可注入依赖，测试用桩替换。
-protocol DownloadRunner {
+/// 约束为 `AnyObject`：管理器持有 `let runner` 并需要改写其 `onEvent` 回调，
+/// 只有引用类型语义才成立（值类型无法通过 `let` 常量赋值）。
+protocol DownloadRunner: AnyObject {
     var onEvent: (@Sendable (DownloadEvent) -> Void)? { get set }
     func start(recordID: String, url: String, resumeData: Data?)
     func cancel(recordID: String)
@@ -32,7 +34,9 @@ final class BackgroundDownloadCoordinator: NSObject, URLSessionDownloadDelegate,
     private let lock = NSLock()
     private var fileNames: [String: String] = [:]   // recordID -> fileName
 
-    init(fileStore: FileStoring, identifier: String = Self.identifier) {
+    // 默认参数里不能用协变 `Self`（error: covariant 'Self' type cannot be referenced
+    // from a default argument expression），改为显式写死类型名。
+    init(fileStore: FileStoring, identifier: String = BackgroundDownloadCoordinator.identifier) {
         self.fileStore = fileStore
         let config = NetworkSessionFactory.backgroundConfig(forIdentifier: identifier)
         super.init()
@@ -60,9 +64,11 @@ final class BackgroundDownloadCoordinator: NSObject, URLSessionDownloadDelegate,
     }
 
     func cancel(recordID: String) {
-        session.getAllTasks { [weak self] tasks in
+        // `getAllTasks` 交付的是 `[URLSessionTask]`，只有向下转型为
+        // `URLSessionDownloadTask` 才有 `cancel(byProducingResumeData:)`。
+        session.getAllTasks { tasks in
             for task in tasks where task.taskDescription == recordID {
-                task.cancel(byProducingResumeData: { _ in })
+                (task as? URLSessionDownloadTask)?.cancel(byProducingResumeData: { _ in })
             }
         }
     }
@@ -91,7 +97,9 @@ final class BackgroundDownloadCoordinator: NSObject, URLSessionDownloadDelegate,
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         // 成功下载时 didFinishDownloadingTo 已先触发 finished；此处仅在失败时回调（error 非 nil）。
         guard let id = task.taskDescription, let error else { return }
-        let resume = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeDataKey] as? Data
+        // 续传凭证在 NSError.userInfo 里以固定字符串键存放；`NSURLSessionDownloadTaskResumeDataKey`
+        // 并非 Swift 可见的常量，直接用其文档约定的字面量键。
+        let resume = (error as NSError).userInfo["NSURLSessionDownloadTaskResumeData"] as? Data
         onEvent?(.failed(recordID: id, errorMessage: error.localizedDescription, resumeData: resume))
     }
 

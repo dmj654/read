@@ -40,6 +40,11 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
 /// - 常规宽度（iPad 全屏 / iPhone 横屏）→ `NavigationSplitView` 侧边栏 + 详情多列。
 ///
 /// 两种布局共享同一状态源（`selection`）与同一批子视图，避免 iPad 与 iPhone 各自维护一套导航。
+// iOS 17 SDK 的 `View` 协议本身不带 `@MainActor`（Xcode 16 / iOS 18 SDK 才加），
+// 而本视图要访问 `@MainActor` 的 ViewModel 与工厂方法；显式标注可避免
+// "main actor-isolated property ... can not be referenced from a non-isolated context"，
+// 同时与后续 SDK 的默认行为一致。
+@MainActor
 struct ContentView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
 

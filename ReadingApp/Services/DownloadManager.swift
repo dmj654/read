@@ -24,7 +24,9 @@ final class DownloadManager {
 
     @discardableResult
     func enqueue(url: String, fileName: String, bookID: String? = nil, sourceID: String? = nil) throws -> DownloadRecord {
-        let record = DownloadRecord(url: url, fileName: fileName, bookID: bookID, sourceID: sourceID)
+        // `DownloadRecord.init` 的形参顺序是 (id, bookID, sourceID, url, fileName, …)，
+        // 必须按声明顺序传参。
+        let record = DownloadRecord(bookID: bookID, sourceID: sourceID, url: url, fileName: fileName)
         try store.insert(record)
         if queue.enqueue(record.id) {
             record.state = .downloading
@@ -44,7 +46,7 @@ final class DownloadManager {
     func pause(_ record: DownloadRecord) {
         record.state = .paused
         try? store.update(record)
-        runner.cancel(record.id)   // 续传凭证经随后的 .failed 事件回收
+        runner.cancel(recordID: record.id)   // 续传凭证经随后的 .failed 事件回收
     }
 
     func resume(_ record: DownloadRecord) {
@@ -60,7 +62,7 @@ final class DownloadManager {
     }
 
     func cancel(_ record: DownloadRecord) {
-        runner.cancel(record.id)
+        runner.cancel(recordID: record.id)
         if let next = queue.cancel(record.id) { startRecord(next) }
         try? store.delete(record)
     }

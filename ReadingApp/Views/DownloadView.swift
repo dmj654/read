@@ -3,6 +3,11 @@ import SwiftData
 
 /// P2.8 下载中心页：进行中 / 已完成 / 失败 列表，支持暂停/继续/删除与清理。
 /// P5.2 无障碍：整行合并朗读（文件名 / 状态 / 进度）；进度条本身对 VoiceOver 隐藏，避免重复播报。
+// iOS 17 SDK 的 `View` 协议本身不带 `@MainActor`（Xcode 16 / iOS 18 SDK 才加），
+// 而本视图要访问 `@MainActor` 的 ViewModel 与工厂方法；显式标注可避免
+// "main actor-isolated property ... can not be referenced from a non-isolated context"，
+// 同时与后续 SDK 的默认行为一致。
+@MainActor
 struct DownloadView: View {
     let manager: DownloadManager
     @State private var vm: DownloadViewModel

@@ -90,6 +90,11 @@ private struct ComicPageImageView: View {
 
 // MARK: - P3.5 漫画阅读器主视图
 
+// iOS 17 SDK 的 `View` 协议本身不带 `@MainActor`（Xcode 16 / iOS 18 SDK 才加），
+// 而本视图要访问 `@MainActor` 的 ViewModel 与工厂方法；显式标注可避免
+// "main actor-isolated property ... can not be referenced from a non-isolated context"，
+// 同时与后续 SDK 的默认行为一致。
+@MainActor
 struct ComicReaderView: View {
     @State private var vm: ComicReaderViewModel
     var downloader: PageDownloading?
