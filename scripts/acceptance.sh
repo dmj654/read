@@ -60,6 +60,33 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 
 # ------------------------------------------------- 1. 全量测试 · iPhone
+# 从 xcresult 里提取失败用例，直接打到 CI 日志，避免只能下载产物才能定位。
+dump_failures() {
+  local bundle="$1"
+  [ -d "$bundle" ] || { echo "（未生成 xcresult：$bundle）"; return 0; }
+  echo "──────── 失败用例摘要 ────────"
+  xcrun xcresulttool get test-results summary --path "$bundle" 2>/dev/null \
+    | sed -n '1,80p' || echo "（xcresulttool 解析失败，可下载产物用 Xcode 打开）"
+  echo "──────── 失败用例列表 ────────"
+  xcrun xcresulttool get test-results tests --path "$bundle" 2>/dev/null \
+    | python3 -c "
+import json,sys
+def walk(n, depth=0):
+    if isinstance(n, dict):
+        if n.get('result') in ('Failed','Expected Failure') and n.get('nodeType') == 'Test Case':
+            print('  FAIL:', n.get('name'))
+        for c in n.get('children', []) or []:
+            walk(c, depth+1)
+    elif isinstance(n, list):
+        for c in n: walk(c, depth)
+try:
+    walk(json.load(sys.stdin))
+except Exception:
+    pass
+" || true
+  echo "──────────────────────────────"
+}
+
 step "1/4 全量单元测试 · iPhone（--enableCodeCoverage YES）"
 
 xcodebuild test \
@@ -74,8 +101,7 @@ xcodebuild test \
   -default-test-execution-time-allowance 120 \
   -maximum-test-execution-time-allowance 600 \
   ${ONLY_ARGS[@]+"${ONLY_ARGS[@]}"} \
-  -quiet \
-  || fatal "iPhone 目的地测试失败：用 Xcode 打开 $OUT/Result-iPhone.xcresult 查看失败用例"
+  || { dump_failures "$OUT/Result-iPhone.xcresult"; fatal "iPhone 目的地测试失败：用 Xcode 打开 $OUT/Result-iPhone.xcresult 查看失败用例"; }
 
 ok "iPhone 目的地全量测试通过"
 
@@ -94,8 +120,7 @@ xcodebuild test \
   -default-test-execution-time-allowance 120 \
   -maximum-test-execution-time-allowance 600 \
   ${ONLY_ARGS[@]+"${ONLY_ARGS[@]}"} \
-  -quiet \
-  || fatal "iPad 目的地测试失败：用 Xcode 打开 $OUT/Result-iPad.xcresult 查看失败用例"
+  || { dump_failures "$OUT/Result-iPad.xcresult"; fatal "iPad 目的地测试失败：用 Xcode 打开 $OUT/Result-iPad.xcresult 查看失败用例"; }
 
 ok "iPad 目的地全量测试通过（横向/常规宽度布局相关代码在 iPad idiom 下无编译或运行期问题）"
 
