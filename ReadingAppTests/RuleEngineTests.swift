@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import JavaScriptCore
 @testable import ReadingApp
 
 // MARK: - P0-D 解析引擎单元测试
@@ -69,6 +70,21 @@ final class RuleEngineTests: XCTestCase {
     }
 
     // MARK: P0.17 JS 注入（沙箱）
+    /// 环境探针：只验证 JavaScriptCore 在本模拟器 runtime 上可用。
+    ///
+    /// 单独存在的理由：JSC 出问题时是**进程级崩溃**，会把整个 xctest 进程带走，
+    /// 日志里只剩一句 "Test crashed with signal segv"，无法区分「沙箱环境不可用」
+    /// 与「我们的规则引擎写错了」。XCTest 按选择器名字典序执行，
+    /// `testJSCEnvironmentProbe` 排在 `testJSInvalidDoesNotCrash` 之前，
+    /// 因此一旦崩溃发生在探针之后，就说明 JSC 本身能跑，问题在规则引擎这一侧。
+    func testJSCEnvironmentProbe() {
+        guard let context = JSContext(virtualMachine: nil) else {
+            XCTFail("JavaScriptCore 无法创建 JSContext（该 runtime 上 JSC 不可用）")
+            return
+        }
+        XCTAssertEqual(context.evaluateScript("1 + 1")?.toInt32(), 2)
+    }
+
     func testJSTransform() {
         let r = RuleEngine.evaluate("@js:result.replace(/\\s+/g,'').toUpperCase()", source: "  spaced  ")
         XCTAssertEqual(r, ["SPACED"])

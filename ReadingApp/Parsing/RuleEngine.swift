@@ -214,23 +214,51 @@ enum RuleEngine {
 
     // P0.17 JS 注入（JavaScriptCore 沙箱，无 DOM / 网络）
     private static func runJS(_ code: String, result: String) -> String? {
+        // 崩溃埋点：JSContext 出问题是**进程级**崩溃（不是抛错），
+        // 出问题时日志里只会看到 "Test crashed with signal segv"，没有行号。
+        // 这几行能让下次崩溃精确定位到是哪一步。
+        func trace(_ step: String) {
+            #if DEBUG
+            NSLog("[RuleEngine.runJS] %@", step)
+            #else
+            _ = step
+            #endif
+        }
+
+        trace("create-context")
         guard let context = JSContext(virtualMachine: nil) else { return nil }
 
         // 关键：未设置 `exceptionHandler` 时，脚本的语法/运行时错误会以 **Objective-C 异常**
         // 的形式从 `evaluateScript` 抛出。Swift 无法 catch ObjC 异常，进程会直接崩溃
-        // （CI 上表现为 "Crash: ReadingApp at RuleEngineTests.testJSInvalidDoesNotCrash"，
-        // 并连带把同批次其他用例判为崩溃）。设置处理器后，出错时返回 nil 而非崩溃。
-        context.exceptionHandler = { _, exception in
-            _ = exception?.toString()
+        // （CI 上表现为 "Crash: ReadingApp at RuleEngineTests.testJSInvalidDoesNotCrash"）。
+        // 设置处理器后，出错时 `evaluateScript` 返回 nil。
+        //
+        // 注意：处理器里**不要**再调用 `exception?.toString()` —— 那会在异常展开过程中
+        // 重新进入 JSC 求值，属于已知的危险重入点（解码异常消息会附带调用栈，
+        // 在本就处于错误状态的 VM 上可能再次触发异常）。这里只记录失败标志。
+        var jsFailed = false
+        context.exceptionHandler = { _, _ in
+            jsFailed = true
         }
 
+        trace("bind-result")
         context.setObject(result, forKeyedSubscript: "result" as NSString)
-        context.setObject(NSObject(), forKeyedSubscript: "java" as NSString) // 最小桩，无实际方法
-        guard let value = context.evaluateScript(code) else {
-            return nil // JS 抛错：不崩溃，返回 nil
+        // 最小桩：真实 Legado 源可能引用 java.*，这里只保证属性访问不抛崩溃，
+        // 并未实现任何实际能力（无网络 / 无文件 / 无反射）。
+        context.setObject(NSObject(), forKeyedSubscript: "java" as NSString)
+
+        trace("evaluate")
+        guard let value = context.evaluateScript(code), !jsFailed else {
+            return nil // JS 报错：不崩溃，返回 nil
         }
         if value.isUndefined || value.isNull { return nil }
-        if let arr = value.toArray() { return arr.map { "\($0)" }.joined(separator: "\n") }
+
+        trace("toArray")
+        if let arr = value.toArray() {
+            return arr.map { "\($0)" }.joined(separator: "\n")
+        }
+
+        trace("toString")
         return value.toString()
     }
 }

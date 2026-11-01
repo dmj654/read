@@ -9,8 +9,15 @@
 可选：
     python3 scripts/pick_simulators.py --list          # 人读列表
     python3 scripts/pick_simulators.py --json dev.json # 从已保存的 simctl JSON 解析（离线自测用）
+    python3 scripts/pick_simulators.py --prefer-max    # 改为「最新 runtime 优先」
 
-选型规则：优先最新 iOS runtime；同 runtime 下按设备名升序，取第一个 iPhone 与第一个 iPad。
+选型规则（默认）：在**满足部署目标 iOS 17.0** 的 runtime 里取**最低**的那个，同 runtime 下按设备名
+升序取第一个 iPhone 与第一个 iPad。
+
+为什么默认取最低而不是最新：本工程部署目标是 iOS 17，验收应当尽量贴近下限；更关键的是，
+模拟器 runtime 越新、与工程声明的工具链差得越远，越容易踩到与新系统绑定、与本工程无关的
+运行时问题（例如曾遇到的 iOS 26 模拟器上 JavaScriptCore 在 `evaluateScript` 处 SIGSEGV）。
+团队踩过的坑：默认取最新会挑到 iOS 26.x，把一次无关的系统行为变化误判成业务缺陷。
 """
 
 import json
@@ -71,11 +78,23 @@ def main():
                 continue
             candidates.append((version, device.get("name", ""), device.get("udid", "")))
 
-    # 新 runtime 优先，其次设备名字典序（iPhone 15 会排在 iPhone 16 之前，但不影响可用性）
-    candidates.sort(key=lambda item: (-item[0][0], -item[0][1], item[1]))
-    if "--prefer-min" in args:
-        # 反向优先：用于验证「最低支持系统 iOS 17」上的兼容性
-        candidates.sort(key=lambda item: (item[0][0], item[0][1], item[1]))
+    # 默认：在满足部署目标（iOS 17.0）的 runtime 中取最低者。
+    # 有意不用「最新 runtime 优先」——那会把镜像里预装的 iOS 26 模拟器选出来，
+    # 与工程声明的 iOS 17 工具链相差 9 个大版本，验收结果不再能代表真实用户环境。
+    min_version = (17, 0)
+    eligible = [c for c in candidates if c[0] >= min_version]
+    if not eligible:
+        sys.stderr.write(
+            "未找到 iOS 17.0 及以上的可用模拟器，退化为全部可用 runtime 中最新的一个\n"
+        )
+        eligible = candidates
+
+    # 低版本优先，其次设备名字典序
+    eligible.sort(key=lambda item: (item[0][0], item[0][1], item[1]))
+    if "--prefer-max" in args:
+        # 反向优先：强制在新系统上做兼容性验证时使用
+        eligible.sort(key=lambda item: (-item[0][0], -item[0][1], item[1]))
+    candidates = eligible
 
     if not candidates:
         sys.stderr.write("未找到任何可用 iOS 模拟器；请先安装 iOS runtime：xcrun simctl list runtimes\n")
