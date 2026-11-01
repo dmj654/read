@@ -163,29 +163,45 @@ def do_push(repo: str, token: str, branch: str, cwd: Path) -> bool:
 
 # ── 第一步（备用通道）：Git Data API 推送 ───────────────────────────────────
 
-def _ls_files(cwd: Path) -> list[tuple[str, str]]:
-    """返回 [(相对路径, git mode)]，mode 形如 100644 / 100755。"""
+def _ls_files(cwd: Path) -> list[tuple[str, str, str]]:
+    """返回 [(相对路径, git mode, blob sha)]，mode 形如 100644 / 100755。
+
+    同时返回索引里的 blob sha，用于后续按**索引内容**上传——
+    直接读磁盘字节会绕过 `.gitattributes` 的换行规范化，
+    在 Windows 上会把 CRLF 一起推上去（曾因此让 `set -euo pipefail` 变成
+    `set: pipefail: invalid option name` 而整条流水线失败）。
+    """
     proc = subprocess.run(
         ["git", "ls-files", "--stage", "-z"],
         cwd=str(cwd), capture_output=True,
     )
     if proc.returncode != 0:
         die("git ls-files 失败，无法枚举待推送文件。")
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str]] = []
     for rec in proc.stdout.split(b"\0"):
         if not rec:
             continue
         meta, _, path = rec.partition(b"\t")
         parts = meta.split(b" ")
-        if len(parts) < 2:
+        if len(parts) < 3:
             continue
-        out.append((path.decode("utf-8"), parts[0].decode()))
+        out.append((path.decode("utf-8"), parts[0].decode(), parts[1].decode()))
     return out
 
 
-def _put_contents(repo: str, token: str, path: str, cwd: Path, message: str, branch: str) -> dict:
+def _index_content(cwd: Path, sha: str) -> bytes:
+    """按 blob sha 从 git 对象库读取内容（等价于 `git push` 实际发送的字节）。"""
+    proc = subprocess.run(
+        ["git", "cat-file", "blob", sha], cwd=str(cwd), capture_output=True
+    )
+    if proc.returncode != 0:
+        die(f"读取索引内容失败（blob {sha}）：{proc.stderr.decode('utf-8', 'replace')[:200]}")
+    return proc.stdout
+
+
+def _put_contents(repo: str, token: str, path: str, raw: bytes, message: str, branch: str) -> dict:
     """用 Contents API 写单个文件（空仓库也能用，会创建提交）。"""
-    raw = (cwd / path).read_bytes()
+
     quoted = urllib.parse.quote(path, safe="/")
     status, res = api(
         "PUT",
@@ -213,6 +229,11 @@ def do_push_via_api(repo: str, token: str, branch: str, cwd: Path, message: str)
     """
     log("\n[1/5·备用] 改用 REST API 推送（绕过 git 协议）…")
 
+    # 先把工作区同步进索引，保证上传的是「已提交内容」且经过 .gitattributes 规范化
+    sync = subprocess.run(["git", "add", "-A"], cwd=str(cwd), capture_output=True)
+    if sync.returncode != 0:
+        die(f"git add -A 失败：{sync.stderr.decode('utf-8', 'replace')[:200]}")
+
     files = _ls_files(cwd)
     if not files:
         die("暂存区为空，没有可推送的文件。")
@@ -225,12 +246,13 @@ def do_push_via_api(repo: str, token: str, branch: str, cwd: Path, message: str)
     if remote_empty:
         log("      远端为空仓库 → 先用 Contents API 造首个提交")
         # 优先用 README.md 作为引导文件，其次取第一个文件
-        order = {p: i for i, (p, _) in enumerate(files)}
+        order = {p: i for i, (p, _m, _s) in enumerate(files)}
         boot = "README.md" if "README.md" in order else files[0][0]
-        res = _put_contents(repo, token, boot, cwd, message, branch)
+        boot_sha = dict((f[0], f[2]) for f in files)[boot]
+        res = _put_contents(repo, token, boot, _index_content(cwd, boot_sha), message, branch)
         commit_sha = res.get("commit", {}).get("sha")
         log(f"      ✓ 引导提交 {str(commit_sha)[:10]}（{boot}）")
-        files = [(p, m) for p, m in files if p != boot]
+        files = [f for f in files if f[0] != boot]
 
         status, ref = api("GET", f"/repos/{repo}/git/ref/heads/{branch}", token)
         if status != 200 or not isinstance(ref, dict):
@@ -242,8 +264,8 @@ def do_push_via_api(repo: str, token: str, branch: str, cwd: Path, message: str)
     # ── 批量通道：blobs → tree → commit → ref ──
     bulk_ok = True
     tree_entries: list[dict] = []
-    for idx, (path, mode) in enumerate(files, 1):
-        raw = (cwd / path).read_bytes()
+    for idx, (path, mode, blob_sha) in enumerate(files, 1):
+        raw = _index_content(cwd, blob_sha)
         st, res = api(
             "POST",
             f"/repos/{repo}/git/blobs",
@@ -306,8 +328,8 @@ def do_push_via_api(repo: str, token: str, branch: str, cwd: Path, message: str)
     # ── 逐文件兜底通道 ──
     if not bulk_ok:
         log("      改用逐文件 Contents API 写入（较慢）…")
-        for idx, (path, _mode) in enumerate(files, 1):
-            _put_contents(repo, token, path, cwd, message, branch)
+        for idx, (path, _mode, blob_sha) in enumerate(files, 1):
+            _put_contents(repo, token, path, _index_content(cwd, blob_sha), message, branch)
             if idx % 10 == 0 or idx == len(files):
                 log(f"      文件 {idx}/{len(files)}")
 
