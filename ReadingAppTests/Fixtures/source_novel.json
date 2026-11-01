@@ -1,0 +1,14 @@
+{
+  "bookSourceName": "Demo Novel",
+  "bookSourceUrl": "https://novel.demo.com",
+  "bookSourceType": 1,
+  "enabled": true,
+  "ruleSearch": {
+    "searchUrl": "https://novel.demo.com/s?q={{key}}",
+    "bookList": "//li",
+    "name": "//a"
+  },
+  "ruleBookInfo": "name: //h1[@class=\"name\"]",
+  "ruleToc": "//li/a",
+  "ruleContent": "//div[@id=\"content\"]/p"
+}

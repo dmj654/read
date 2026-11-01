@@ -1,0 +1,31 @@
+# 统一换行符为 LF，避免 Windows 提交的脚本在 macOS Runner 上出现
+# "bad interpreter: /usr/bin/env: bash^M" 之类的致命错误。
+* text=auto eol=lf
+
+# 明确强制 LF：这些文件一旦带 CRLF，CI 会直接失败
+*.sh            text eol=lf
+*.py            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.pbxproj       text eol=lf
+*.xcscheme      text eol=lf
+*.plist         text eol=lf
+*.xcprivacy     text eol=lf
+*.swift         text eol=lf
+*.json          text eol=lf
+*.md            text eol=lf
+*.html          text eol=lf
+*.xcconfig      text eol=lf
+Package.resolved text eol=lf
+
+# 二进制：禁止任何换行转换
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.pdf           binary
+*.zip           binary
+*.ipa           binary
+*.p12           binary
+*.mobileprovision binary
+*.cer           binary

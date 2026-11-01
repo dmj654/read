@@ -1,0 +1,187 @@
+name: CI (Unsigned)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 备用流水线 · 未签名打包（不需要任何证书 / 开发者账号）
+#
+# 用途：当签名版 `ci.yml` 因证书、描述文件、UDID 等问题失败时，用这条流水线先拿到
+#      一个可用的 IPA，用 Sideloadly 等工具在本地重签即可安装，不阻塞其他验证工作。
+#
+# 触发：仅手动（Actions → 左侧 "CI (Unsigned)" → Run workflow）。
+#      刻意不挂 push，避免与签名版重复构建、浪费 macOS 分钟数。
+#      若希望每次 push 都同时产出一个未签名包，把下面 push 段取消注释即可。
+#
+# 产物：ReadingApp-unsigned-ipa（未签名，Payload 直压）、dSYM、报告
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  # push:
+  #   branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  SCHEME: ReadingApp
+  PROJECT: ReadingApp.xcodeproj
+  # 覆盖率门槛（0 = 仅报告；设成 0.60 即要求整体行覆盖率 ≥ 60%）
+  COVERAGE_THRESHOLD: "0"
+
+jobs:
+  unsigned-package:
+    name: 测试 · 未签名 IPA
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ────────────────────────────────────────────────────────── 环境
+      - name: 选择 Xcode 15.4（目标 iOS 17）
+        run: |
+          set -euo pipefail
+          if [ -d /Applications/Xcode_15.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+          else
+            echo "::warning::镜像内未找到 Xcode_15.4.app，回退到默认版本（可能不是 15.4）"
+            ls -d /Applications/Xcode*.app 2>/dev/null || true
+          fi
+          xcodebuild -version
+
+      - name: 校验 iOS 17 模拟器 runtime
+        run: |
+          set -euo pipefail
+          xcrun simctl list runtimes | grep -E "iOS" || true
+          if ! xcrun simctl list runtimes | grep -qE "iOS 17\."; then
+            echo "::error::未找到 iOS 17.x 模拟器 runtime，无法按「目标 iOS 17」验收"
+            exit 1
+          fi
+
+      # ────────────────────────────────────────────────────────── 缓存
+      - name: 缓存 SPM 依赖与 DerivedData
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/Developer/Xcode/DerivedData
+            build/DerivedData
+            build/SourcePackages
+          # key 与签名版区分（unsigned 后缀），避免两条流水线互相污染 DerivedData
+          key: ${{ runner.os }}-xcode-15.4-unsigned-${{ hashFiles('**/Package.resolved', 'ReadingApp.xcodeproj/project.pbxproj') }}
+          restore-keys: |
+            ${{ runner.os }}-xcode-15.4-unsigned-
+            ${{ runner.os }}-xcode-15.4-
+
+      # ─────────────────────────────────────────── 合规校验（快速失败）
+      - name: 工程文件合规校验
+        run: python3 scripts/check_project.py
+
+      # ────────────────────────────────────────────────── 全量单元测试
+      - name: 全量单元测试 + 覆盖率（iPhone & iPad 双目的地）
+        run: bash scripts/acceptance.sh
+
+      # ─────────────────────────────────── Release Archive（关闭签名）
+      - name: Archive（Release，关闭代码签名）
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          xcodebuild archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/ReadingApp.xcarchive \
+            -derivedDataPath build/DerivedData \
+            -clonedSourcePackagesDirPath build/SourcePackages \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            -quiet
+          echo "== Archive 产物 =="
+          ls -la build/ReadingApp.xcarchive/Products/Applications
+
+      # ────────────────────────────────────────────────── 导出 IPA
+      - name: 导出 IPA（未签名）
+        run: |
+          set -euo pipefail
+          APP_PATH="build/ReadingApp.xcarchive/Products/Applications/ReadingApp.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "::error::未找到 $APP_PATH，Archive 可能失败"
+            find build/ReadingApp.xcarchive -maxdepth 3 -type d || true
+            exit 1
+          fi
+
+          rm -rf build/ipa
+          mkdir -p build/ipa/Payload
+          cp -R "$APP_PATH" build/ipa/Payload/
+          ( cd build/ipa && zip -qry ../ReadingApp-unsigned.ipa Payload )
+
+          IPA="build/ReadingApp-unsigned.ipa"
+          ls -lh "$IPA"
+
+          # 用文件承接 unzip 输出而不是 `unzip | head`：管道提前关闭会让 unzip 收到
+          # SIGPIPE，在 `set -o pipefail` 下会误判为失败。
+          echo "== IPA 内容校验 =="
+          unzip -l "$IPA" > build/ipa-listing.txt
+          head -20 build/ipa-listing.txt
+          grep -qE "Payload/ReadingApp\.app/ReadingApp[[:space:]]*$" build/ipa-listing.txt \
+            || { echo "::error::IPA 内缺少可执行文件 Payload/ReadingApp.app/ReadingApp"; exit 1; }
+
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+            "$APP_PATH/Info.plist" 2>/dev/null || echo "0.0.0")
+          BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" \
+            "$APP_PATH/Info.plist" 2>/dev/null || echo "0")
+          mv "$IPA" "build/ReadingApp-unsigned-${VERSION}-${BUILD}.ipa"
+          echo "IPA 最终产物：build/ReadingApp-unsigned-${VERSION}-${BUILD}.ipa"
+
+      # ────────────────────────────────────────────────────── 制品上传
+      - name: 上传 IPA 制品（保留 30 天）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReadingApp-unsigned-ipa
+          path: build/ReadingApp-unsigned-*.ipa
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0   # IPA 已压缩，避免二次压缩
+
+      - name: 上传 dSYM（崩溃符号化）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReadingApp-dSYM
+          path: build/ReadingApp.xcarchive/dSYMs
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: 上传测试与覆盖率报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-reports
+          path: build/reports
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: 写入 Job Summary
+        if: always()
+        run: |
+          IPA_FILE=$(ls build/ReadingApp-unsigned-*.ipa 2>/dev/null | head -1 || true)
+          {
+            echo "## 未签名打包结果"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 任务状态 | ${{ job.status }} |"
+            echo "| IPA 制品 | ${IPA_FILE:-未产出（测试阶段失败）} |"
+            echo ""
+            echo "> 未签名 IPA 需用 Sideloadly / iMazing 等工具重签后安装，详见 docs/交付与安装指南.md"
+            echo ""
+            if [ -f build/reports/coverage-summary.txt ]; then
+              echo "### 覆盖率"; echo '```'; cat build/reports/coverage-summary.txt; echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

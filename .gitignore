@@ -1,0 +1,34 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode
+build/
+DerivedData/
+*.xcresult
+*.xcarchive
+*.ipa
+*.dSYM.zip
+xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# 验收产物（scripts/acceptance.sh 输出，已含于 build/）
+build/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+# 注：Package.resolved 需入库以锁定依赖版本，故意不忽略
+
+# 编辑器 / 工具
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 本地书源与测试抓包（禁止入库：书源规则不随仓库分发）
+*.bookSource.json
+LocalSources/

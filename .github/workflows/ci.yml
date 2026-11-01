@@ -1,0 +1,398 @@
+name: CI
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 全流程：SPM 依赖缓存 → 全量单元测试（iPhone + iPad）→ 覆盖率 → 工程合规校验
+#        → 导入开发者证书与描述文件 → Release Archive → 签名导出 Development IPA
+#        → 上传 IPA 制品（可直接安装到已注册 UDID 的设备）
+#
+# 触发：push 到 main（自动）+ 手动（Actions 页面 Run workflow，可选导出方式）
+#
+# 为什么不用 pull_request 触发：
+#   来自 fork 的 PR 拿不到 Secrets，签名必然失败；本仓库若需要 PR 只跑测试，
+#   可另建一个仅做测试、不做签名的工作流，或在下方放开注释并给签名步骤加条件。
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      export_method:
+        description: '导出方式（development 需设备 UDID 已在描述文件内）'
+        required: true
+        default: development
+        type: choice
+        options:
+          - development
+          - ad-hoc
+          - app-store-connect
+
+# 签名构建不并发：多个 Archive 抢同一台机器无意义，且中间产物会互相覆盖
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  SCHEME: ReadingApp
+  PROJECT: ReadingApp.xcodeproj
+  # 覆盖率门槛（0 = 仅报告；设成 0.60 即要求整体行覆盖率 ≥ 60%）
+  COVERAGE_THRESHOLD: "0"
+  # push 触发时 inputs 为空，回落到 development
+  EXPORT_METHOD: ${{ inputs.export_method || 'development' }}
+
+jobs:
+  signed-release:
+    name: 测试 · 签名 · 导出 IPA
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ────────────────────────────────────────────────────────── 环境
+      - name: 选择 Xcode 15.4（目标 iOS 17）
+        run: |
+          set -euo pipefail
+          if [ -d /Applications/Xcode_15.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+          else
+            echo "::warning::镜像内未找到 Xcode_15.4.app，回退到默认版本（可能不是 15.4）"
+            ls -d /Applications/Xcode*.app 2>/dev/null || true
+          fi
+          xcodebuild -version
+
+      - name: 校验 iOS 17 模拟器 runtime
+        run: |
+          set -euo pipefail
+          xcrun simctl list runtimes | grep -E "iOS" || true
+          if ! xcrun simctl list runtimes | grep -qE "iOS 17\."; then
+            echo "::error::未找到 iOS 17.x 模拟器 runtime，无法按「目标 iOS 17」验收"
+            exit 1
+          fi
+
+      # ────────────────────────────────────────────────────────── 缓存
+      - name: 缓存 SPM 依赖与 DerivedData
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/Developer/Xcode/DerivedData
+            build/DerivedData
+            build/SourcePackages
+          # key 带 Xcode 版本：DerivedData 与 Xcode 强绑定，避免跨版本污染
+          key: ${{ runner.os }}-xcode-15.4-signed-${{ hashFiles('**/Package.resolved', 'ReadingApp.xcodeproj/project.pbxproj') }}
+          restore-keys: |
+            ${{ runner.os }}-xcode-15.4-signed-
+            ${{ runner.os }}-xcode-15.4-
+
+      # ─────────────────────────────────────────── 合规校验（快速失败）
+      - name: 工程文件合规校验
+        run: python3 scripts/check_project.py
+
+      # ────────────────────────────────────────────────── 全量单元测试
+      - name: 全量单元测试 + 覆盖率（iPhone & iPad 双目的地）
+        run: bash scripts/acceptance.sh
+
+      # ──────────────────────────────────────── Secrets 前置校验（快速失败）
+      # 放在签名前而不是 Archive 时才发现，避免白跑十几分钟
+      - name: 校验签名 Secrets 是否齐备
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${BUILD_CERTIFICATE_BASE64:-}" ]     || missing+=("BUILD_CERTIFICATE_BASE64")
+          [ -n "${P12_PASSWORD:-}" ]                 || missing+=("P12_PASSWORD")
+          [ -n "${PROVISIONING_PROFILE_BASE64:-}" ]  || missing+=("PROVISIONING_PROFILE_BASE64")
+          [ -n "${TEAM_ID:-}" ]                      || missing+=("TEAM_ID")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::缺少仓库 Secrets：${missing[*]}。配置路径：Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+          if [ ${#TEAM_ID} -ne 10 ]; then
+            echo "::warning::TEAM_ID 长度为 ${#TEAM_ID}，Apple Team ID 通常是 10 位字母数字"
+          fi
+          echo "Secrets 齐备，TEAM_ID=${TEAM_ID}"
+
+      # ─────────────────────────────────────────── 解析工程 Bundle ID
+      - name: 解析 Bundle ID（可用 Secret BUNDLE_ID 覆盖）
+        env:
+          BUNDLE_ID_OVERRIDE: ${{ secrets.BUNDLE_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${BUNDLE_ID_OVERRIDE:-}" ]; then
+            BUNDLE_ID="$BUNDLE_ID_OVERRIDE"
+            echo "使用 Secret 指定的 Bundle ID：$BUNDLE_ID"
+          else
+            BUNDLE_ID=$(xcodebuild -showBuildSettings \
+              -project "$PROJECT" -scheme "$SCHEME" -configuration Release 2>/dev/null \
+              | awk -F' = ' '/^ *PRODUCT_BUNDLE_IDENTIFIER = /{print $2; exit}')
+            echo "从工程读取 Bundle ID：$BUNDLE_ID"
+          fi
+          [ -n "$BUNDLE_ID" ] || { echo "::error::无法确定 Bundle ID"; exit 1; }
+          echo "BUNDLE_ID=$BUNDLE_ID" >> "$GITHUB_ENV"
+
+      # ──────────────────────────────── 导入证书与描述文件到钥匙串
+      - name: 导入签名证书与描述文件
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          PROFILE_SPECIFIER_OVERRIDE: ${{ secrets.PROFILE_SPECIFIER }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
+
+          # 1) 建立临时钥匙串（构建结束即删除）
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"   # 6 小时内不自动锁定
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # 2) 导入 p12（-A 允许所有工具访问该私钥）
+          printf '%s' "$BUILD_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+          security import "$CERT_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$P12_PASSWORD" \
+            -A -t cert -f pkcs12
+          rm -f "$CERT_PATH"
+
+          # 3) 关键一步：允许 codesign 在无 GUI 提示的情况下访问私钥
+          #    缺这一步会得到 errSecInternalComponent 或构建卡死
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
+
+          # 4) 把临时钥匙串加入搜索列表，否则 codesign 找不到身份
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          # 5) 校验身份确实可用（口令错 / p12 不含私钥 / 证书过期都会在此暴露）
+          echo "== 可用签名身份 =="
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | tee "$RUNNER_TEMP/identities.txt"
+          IDENTITIES=$(grep -c "Apple Development" "$RUNNER_TEMP/identities.txt" || true)
+          if [ "${IDENTITIES:-0}" -eq 0 ]; then
+            echo "::error::钥匙串中没有可用的 Apple Development 身份：请检查 P12_PASSWORD 是否正确、p12 是否包含私钥、证书是否已过期"
+            exit 1
+          fi
+
+          # 6) 安装描述文件（按 UUID 命名，Xcode 才认）
+          printf '%s' "$PROVISIONING_PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+          security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist" 2>/dev/null \
+            || { echo "::error::描述文件无法解析，BASE64 可能损坏或文件不是 .mobileprovision"; exit 1; }
+
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$RUNNER_TEMP/profile.plist")
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" "$RUNNER_TEMP/profile.plist")
+          PROFILE_TEAM=$(/usr/libexec/PlistBuddy -c "Print :TeamIdentifier:0" "$RUNNER_TEMP/profile.plist")
+          APP_ID_ENT=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" "$RUNNER_TEMP/profile.plist")
+
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp "$PROFILE_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/"$PROFILE_UUID".mobileprovision
+
+          # 7) 一致性诊断：这三项不匹配，Archive 一定失败，提前给出可读错误
+          echo "描述文件名称：$PROFILE_NAME"
+          echo "描述文件 Team：$PROFILE_TEAM"
+          echo "描述文件 App ID：$APP_ID_ENT"
+          echo "工程 Bundle ID：${BUNDLE_ID}"
+
+          [ "$PROFILE_TEAM" = "$TEAM_ID" ] || {
+            echo "::error::描述文件 TeamIdentifier($PROFILE_TEAM) 与 Secret TEAM_ID($TEAM_ID) 不一致"
+            exit 1
+          }
+          case "$APP_ID_ENT" in
+            *"$BUNDLE_ID") : ;;
+            *\**)          echo "::warning::描述文件使用通配符 App ID($APP_ID_ENT)，将匹配同前缀的 Bundle ID" ;;
+            *)             echo "::error::描述文件 App ID($APP_ID_ENT) 不包含工程 Bundle ID($BUNDLE_ID)"; exit 1 ;;
+          esac
+
+          # 8) 有效期校验（最常见的一类「昨天还好今天失败」）
+          python3 - "$RUNNER_TEMP/profile.plist" <<'PY'
+          import datetime, plistlib, sys
+          data = plistlib.load(open(sys.argv[1], "rb"))
+          exp = data.get("ExpirationDate")
+          if isinstance(exp, datetime.datetime):
+              # plistlib 返回 naive UTC 时间；用 utcnow 的等价写法避免 3.12 的弃用告警
+              now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+              print("描述文件到期时间（UTC）：%s" % exp)
+              sys.exit(0 if exp > now else 1)
+          print("描述文件无 ExpirationDate 字段，跳过有效期校验")
+          PY
+          echo "PROFILE_NAME=$PROFILE_NAME" >> "$GITHUB_ENV"
+          echo "PROFILE_UUID=$PROFILE_UUID" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+          # 允许用 Secret 覆盖 specifier（描述文件名含中文/特殊字符时更稳）
+          if [ -n "${PROFILE_SPECIFIER_OVERRIDE:-}" ]; then
+            echo "PROFILE_SPECIFIER=$PROFILE_SPECIFIER_OVERRIDE" >> "$GITHUB_ENV"
+          else
+            echo "PROFILE_SPECIFIER=$PROFILE_NAME" >> "$GITHUB_ENV"
+          fi
+
+      # ─────────────────────────────────────── Release Archive（手动签名）
+      - name: Archive（Release，手动签名）
+        run: |
+          set -euo pipefail
+          # 钥匙串在导入步骤已 unlock 且设了 6 小时不自动锁定，这里直接构建即可
+          xcodebuild archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/ReadingApp.xcarchive \
+            -derivedDataPath build/DerivedData \
+            -clonedSourcePackagesDirPath build/SourcePackages \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Development" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_SPECIFIER" \
+            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
+            -quiet
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+
+      # ───────────────────────────────────── 生成 ExportOptions 并导出 IPA
+      - name: 导出 Development IPA
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          set -euo pipefail
+          # exportPath 必须不存在或为空，否则 xcodebuild 会报路径已存在
+          rm -rf build/export
+
+          cat > build/ExportOptions.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>${EXPORT_METHOD}</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>Apple Development</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${BUNDLE_ID}</key><string>${PROFILE_SPECIFIER}</string>
+            </dict>
+            <key>stripSwiftSymbols</key><true/>
+            <key>compileBitcode</key><false/>
+            <key>destination</key><string>export</string>
+          </dict>
+          </plist>
+          PLIST
+
+          plutil -lint build/ExportOptions.plist
+          echo "== ExportOptions.plist =="
+          plutil -p build/ExportOptions.plist
+
+          # 注意：手动签名 + 已安装描述文件时不要加 -allowProvisioningUpdates，
+          # 它需要 App Store Connect 账号登录，在 CI 上会直接报 "No Accounts"。
+          xcodebuild -exportArchive \
+            -archivePath build/ReadingApp.xcarchive \
+            -exportPath build/export \
+            -exportOptionsPlist build/ExportOptions.plist
+
+          ls -lh build/export
+
+      # ─────────────────────────────────────────────── 校验签名结果
+      - name: 校验 IPA 签名与描述文件
+        run: |
+          set -euo pipefail
+          IPA=$(ls build/export/*.ipa | head -1)
+          [ -n "$IPA" ] || { echo "::error::导出目录没有 .ipa"; exit 1; }
+
+          mkdir -p build/reports
+          rm -rf build/ipa-check
+          unzip -q "$IPA" -d build/ipa-check
+          APP="build/ipa-check/Payload/ReadingApp.app"
+
+          echo "== codesign 详情 =="
+          codesign -dv --verbose=4 "$APP" 2>&1 | tee build/reports/codesign.txt
+          echo ""
+          echo "== 严格校验 =="
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          echo ""
+          echo "== 内嵌描述文件 =="
+          security cms -D -i "$APP/embedded.mobileprovision" > build/reports/embedded-profile.plist
+          /usr/libexec/PlistBuddy -c "Print :Name" build/reports/embedded-profile.plist
+          /usr/libexec/PlistBuddy -c "Print :TeamIdentifier:0" build/reports/embedded-profile.plist
+          /usr/libexec/PlistBuddy -c "Print :ExpirationDate" build/reports/embedded-profile.plist
+
+          # 带版本号重命名，便于下载后区分构建
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Info.plist")
+          FINAL="build/ReadingApp-${EXPORT_METHOD}-${VERSION}-${BUILD}.ipa"
+          mv "$IPA" "$FINAL"
+          ls -lh "$FINAL"
+          echo "SIGNED_IPA=$FINAL" >> "$GITHUB_ENV"
+          echo "IPA_SIZE=$(du -h "$FINAL" | cut -f1)" >> "$GITHUB_ENV"
+
+      # ────────────────────────────────────────────────────── 制品上传
+      - name: 上传 IPA 制品（保留 30 天）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReadingApp-${{ env.EXPORT_METHOD }}-ipa
+          path: build/ReadingApp-*.ipa
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0   # IPA 已压缩，避免二次压缩
+
+      - name: 上传 dSYM（崩溃符号化）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReadingApp-dSYM
+          path: build/ReadingApp.xcarchive/dSYMs
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: 上传测试、覆盖率与签名报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports
+          path: build/reports
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ────────────────────────────────────────── 清理钥匙串（必做）
+      - name: 清理临时钥匙串
+        if: always()
+        run: |
+          set +e
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+            echo "已删除临时钥匙串"
+          fi
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/profile.mobileprovision"
+          rm -rf ~/Library/MobileDevice/Provisioning\ Profiles/"${PROFILE_UUID:-none}".mobileprovision
+
+      - name: 写入 Job Summary
+        if: always()
+        run: |
+          {
+            echo "## 签名打包结果"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 任务状态 | ${{ job.status }} |"
+            echo "| 导出方式 | ${EXPORT_METHOD} |"
+            echo "| Bundle ID | ${BUNDLE_ID:-未解析} |"
+            echo "| 描述文件 | ${PROFILE_NAME:-未知} |"
+            echo "| IPA | ${SIGNED_IPA:-未产出} |"
+            echo "| IPA 体积 | ${IPA_SIZE:-—} |"
+            echo ""
+            if [ -f build/reports/coverage-summary.txt ]; then
+              echo "### 覆盖率"; echo '```'; cat build/reports/coverage-summary.txt; echo '```'
+            fi
+            if [ -f build/reports/codesign.txt ]; then
+              echo "### 签名信息"; echo '```'; cat build/reports/codesign.txt; echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,8 @@
+{
+  "bookSourceName": "Demo Comic",
+  "bookSourceUrl": "https://comic.demo.com",
+  "bookSourceType": 3,
+  "ruleSearch": {
+    "searchUrl": "https://comic.demo.com/s"
+  }
+}
