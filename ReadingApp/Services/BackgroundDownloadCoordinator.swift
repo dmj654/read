@@ -30,7 +30,10 @@ final class BackgroundDownloadCoordinator: NSObject, URLSessionDownloadDelegate,
     /// 后台会话在 App 被唤醒交付完所有事件后，由系统回调的结束处理器（AppDelegate 注入）。
     var backgroundCompletionHandler: (() -> Void)?
     private let fileStore: FileStoring
-    private let session: URLSession
+    /// 后台会话必须以 `self` 作为 delegate，而 `self` 只有在 `super.init()` 之后才可用；
+    /// 同时 `let` 存储属性又必须早于 `super.init()` 初始化——两者不可兼得，
+    /// 因此声明为 `var` + 隐式解包，在 `super.init()` 之后立即赋值（生命周期内仅赋值一次）。
+    private var session: URLSession!
     private let lock = NSLock()
     private var fileNames: [String: String] = [:]   // recordID -> fileName
 
@@ -38,8 +41,8 @@ final class BackgroundDownloadCoordinator: NSObject, URLSessionDownloadDelegate,
     // from a default argument expression），改为显式写死类型名。
     init(fileStore: FileStoring, identifier: String = BackgroundDownloadCoordinator.identifier) {
         self.fileStore = fileStore
-        let config = NetworkSessionFactory.backgroundConfig(forIdentifier: identifier)
         super.init()
+        let config = NetworkSessionFactory.backgroundConfig(forIdentifier: identifier)
         self.session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }
 
