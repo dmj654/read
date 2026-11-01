@@ -156,23 +156,23 @@ enum RuleEngine {
         switch op {
         case .xpath(let expr):
             if let (base, attr) = splitAttribute(expr) {
-                return inputs.flatMap { html in
+                return inputs.flatMap { html -> [String] in
                     guard let doc = try? HTML(html: html, encoding: .utf8) else { return [] }
                     return doc.xpath(base).compactMap { $0[attr] }
                 }
             }
-            return inputs.flatMap { html in
+            return inputs.flatMap { html -> [String] in
                 guard let doc = try? HTML(html: html, encoding: .utf8) else { return [] }
                 return doc.xpath(expr).compactMap { $0.text }
             }
         case .css(let expr):
             if let (base, attr) = splitAttribute(expr) {
-                return inputs.flatMap { html in
+                return inputs.flatMap { html -> [String] in
                     guard let doc = try? HTML(html: html, encoding: .utf8) else { return [] }
                     return doc.css(base).compactMap { $0[attr] }
                 }
             }
-            return inputs.flatMap { html in
+            return inputs.flatMap { html -> [String] in
                 guard let doc = try? HTML(html: html, encoding: .utf8) else { return [] }
                 return doc.css(expr).compactMap { $0.text }
             }

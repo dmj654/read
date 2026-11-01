@@ -17,6 +17,22 @@ enum NetworkError: Error, Equatable {
     case badStatus(Int)
     case noData
     case transport(Error)
+
+    /// `transport` 关联的是 `Error` 协议存在类型，无法自动合成 `Equatable`，
+    /// 因此手写实现：前两例按值比较，`transport` 按「同类型 + 同描述」比较，
+    /// 足以支撑测试断言与错误归类。
+    static func == (lhs: NetworkError, rhs: NetworkError) -> Bool {
+        switch (lhs, rhs) {
+        case let (.badStatus(a), .badStatus(b)):
+            return a == b
+        case (.noData, .noData):
+            return true
+        case let (.transport(a), .transport(b)):
+            return String(describing: a) == String(describing: b)
+        default:
+            return false
+        }
+    }
 }
 
 /// 统一请求描述。
@@ -61,9 +77,13 @@ final class CookieJar: @unchecked Sendable {
     }
 
     func absorb(from response: HTTPURLResponse, for url: URL) {
-        if let fields = response.allHeaderFields as? [String: String],
-           let cookies = HTTPCookie.cookies(withResponseHeaderFields: fields, for: url) {
-            setCookies(cookies, for: url)
+        // `HTTPCookie.cookies(withResponseHeaderFields:for:)` 返回非可选 `[HTTPCookie]`，
+        // 不能做条件绑定，这里直接接收后判空。
+        if let fields = response.allHeaderFields as? [String: String] {
+            let cookies = HTTPCookie.cookies(withResponseHeaderFields: fields, for: url)
+            if !cookies.isEmpty {
+                setCookies(cookies, for: url)
+            }
         }
     }
 

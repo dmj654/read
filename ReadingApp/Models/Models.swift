@@ -132,8 +132,12 @@ final class AppSettings {
 
     /// 取用全局唯一设置记录；不存在则按默认值创建。
     static func loadOrCreate(in context: ModelContext) throws -> AppSettings {
+        // `#Predicate` 宏展开成 key path 表达式，不能直接引用静态成员
+        // （error: key path cannot refer to static member 'singletonID'），
+        // 必须先落到局部常量再被闭包捕获。
+        let singletonID = AppSettings.singletonID
         let descriptor = FetchDescriptor<AppSettings>(
-            predicate: #Predicate { $0.id == AppSettings.singletonID }
+            predicate: #Predicate { $0.id == singletonID }
         )
         if let existing = try context.fetch(descriptor).first {
             return existing

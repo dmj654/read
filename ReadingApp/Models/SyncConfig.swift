@@ -37,8 +37,10 @@ final class SyncConfig {
 
     /// 取用全局唯一配置；不存在则按默认值创建。
     static func loadOrCreate(in context: ModelContext) throws -> SyncConfig {
+        // 同 AppSettings：`#Predicate` 不能引用静态成员，先取局部常量。
+        let singletonID = SyncConfig.singletonID
         let descriptor = FetchDescriptor<SyncConfig>(
-            predicate: #Predicate { $0.id == SyncConfig.singletonID }
+            predicate: #Predicate { $0.id == singletonID }
         )
         if let existing = try context.fetch(descriptor).first {
             return existing
