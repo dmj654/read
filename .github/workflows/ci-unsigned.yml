@@ -17,9 +17,9 @@ on:
   #   branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# 刻意不设 concurrency 互斥：未签名包仅在手动触发时使用，
+# 且历史上曾出现在同一 ref 下被并发组立即取消的问题；
+# 这里改为不互斥，保证每次手动触发都能真正跑起来。
 
 permissions:
   contents: read
