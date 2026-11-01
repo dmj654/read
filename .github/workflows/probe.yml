@@ -1,0 +1,23 @@
+name: Probe
+
+# 临时诊断用：分别验证 Linux 与 macOS Runner 能否被成功分配。
+# 若 linux job 正常运行而 mac job 被立即取消，即可判定为 macOS Runner 不可用。
+on:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: probe-linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: echo
+        run: echo "linux runner ok"; uname -a
+
+  mac:
+    name: probe-macos
+    runs-on: macos-14
+    timeout-minutes: 5
+    steps:
+      - name: echo
+        run: echo "mac runner ok"; sw_vers
