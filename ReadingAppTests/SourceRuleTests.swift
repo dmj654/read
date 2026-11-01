@@ -77,13 +77,31 @@ final class SourceRuleTests: XCTestCase {
         XCTAssertNil(result.imageListRule)       // 漫画字段默认 nil
     }
 
-    /// 唯一 id 约束：重复 id 插入应使 save 抛错（数据完整性）。
+    /// 唯一 id 约束：同一个 id 不能被写入两条记录（数据完整性）。
+    ///
+    /// 这里**不**断言「重复插入会让 save 抛错」。`@Attribute(.unique)` 的行为随系统版本变化：
+    /// iOS 18 上 save 会抛错，iOS 26 上改成直接 upsert（后写覆盖前写，不报错）。
+    /// 两者都是合法实现，把测试绑在某一种上只会让用例随运行时版本翻脸。
+    /// 真正需要守住的不变量只有一个：库里这个 id 只能有一条。
     func testUniqueIdConstraint() throws {
         let container = try makeInMemoryContainer()
         let context = ModelContext(container)
-        context.insert(SourceRule(id: "dup-id", name: "A"))
+        let dupID = "dup-id"
+
+        context.insert(SourceRule(id: dupID, name: "A"))
         try context.save()
-        context.insert(SourceRule(id: "dup-id", name: "B"))
-        XCTAssertThrowsError(try context.save())
+
+        context.insert(SourceRule(id: dupID, name: "B"))
+        do {
+            try context.save()
+        } catch {
+            // 旧版 SwiftData 会因唯一约束冲突抛错；回滚掉这条待写入的记录，
+            // 否则后续 fetch 会把未落库的对象也带出来，掩盖真实结果。
+            context.rollback()
+        }
+
+        let all = try context.fetch(FetchDescriptor<SourceRule>())
+        XCTAssertEqual(all.filter { $0.id == dupID }.count, 1,
+                       "唯一约束失效：同一个 id 出现了多条记录")
     }
 }

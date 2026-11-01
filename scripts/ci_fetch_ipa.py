@@ -240,8 +240,24 @@ def do_push_via_api(repo: str, token: str, branch: str, cwd: Path, message: str)
     log(f"      待推送 {len(files)} 个文件")
 
     # ── 判定远端是否为空 ──
-    status, ref = api("GET", f"/repos/{repo}/git/ref/heads/{branch}", token)
-    remote_empty = status != 200
+    # 只有「明确 404」才代表分支不存在（即空仓库）。
+    # 网络抖动会返回 HTTP 0，把它当成空仓库会走错分支：脚本会去用 Contents API
+    # 硬写引导文件，而远端其实已有同名文件，于是收到 422 "sha wasn't supplied"，
+    # 看上去像仓库状态坏了，实际只是一次请求失败。
+    def _read_ref() -> tuple:
+        return api("GET", f"/repos/{repo}/git/ref/heads/{branch}", token)
+
+    status, ref = _read_ref()
+    for _ in range(3):
+        if status not in (0, 500, 502, 503, 504):
+            break
+        log(f"      查询分支引用失败（HTTP {status}），2 秒后重试…")
+        time.sleep(2)
+        status, ref = _read_ref()
+
+    if status not in (200, 404):
+        die(f"无法判定远端分支状态（HTTP {status}），为避免误写远端已中止：{ref}")
+    remote_empty = status == 404
 
     if remote_empty:
         log("      远端为空仓库 → 先用 Contents API 造首个提交")
