@@ -16,7 +16,11 @@ final class DownloadManager {
         self.runner = runner
         self.queue = DownloadQueue(maxConcurrent: maxConcurrent)
         runner.onEvent = { [weak self] event in
-            Task { @MainActor in self?.handle(event) }
+            // 弱捕获的 `self` 本质是可变引用，若直接在内层并发闭包（`Task`）里引用，
+            // Swift 5.10 会报 "reference to captured var 'self' in concurrently-executing code"。
+            // 先解包成不可变局部变量，再交给主线程任务。
+            guard let strongSelf = self else { return }
+            Task { @MainActor in strongSelf.handle(event) }
         }
     }
 
