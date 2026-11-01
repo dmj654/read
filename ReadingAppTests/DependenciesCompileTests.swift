@@ -13,7 +13,7 @@ final class DependenciesCompileTests: XCTestCase {
     /// Kanna 符号可实例化（不触发网络，仅验证模块链接）。
     func testKannaLinkable() throws {
         let doc = try HTML(html: "<p>hello</p>", encoding: .utf8)
-        XCTAssertEqual(doc?.at_css("p")?.text, "hello")
+        XCTAssertEqual(doc.at_css("p")?.text, "hello")
     }
 
     /// ZIPFoundation 模块可链接（Archive 能力在 P3 落地）。

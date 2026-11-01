@@ -199,7 +199,9 @@ final class NetworkServiceTests: XCTestCase {
 final class BackgroundSessionTests: XCTestCase {
     func testBackgroundConfig() {
         let session = NetworkSessionFactory.background(forIdentifier: "com.example.bg")
-        XCTAssertTrue(session.configuration.isBackground)
+        // `URLSessionConfiguration` 没有 `isBackground` 属性：
+        // 后台会话的唯一可靠判据是 `identifier` 非空且等于后台会话标识。
+        XCTAssertNotNil(session.configuration.identifier)
         XCTAssertEqual(session.configuration.identifier, "com.example.bg")
     }
 }

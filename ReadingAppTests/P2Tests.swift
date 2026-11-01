@@ -75,17 +75,17 @@ final class P2Tests: XCTestCase {
         let a = try mgr.enqueue(url: "https://x.com/a", fileName: "a.bin")
         let b = try mgr.enqueue(url: "https://x.com/b", fileName: "b.bin")
         XCTAssertEqual(runner.started.count, 1)                 // 并发=1，b 排队
-        XCTAssertEqual(store.byID(a.id)?.state, .downloading)
-        XCTAssertEqual(store.byID(b.id)?.state, .queued)
+        XCTAssertEqual(try store.byID(a.id)?.state, .downloading)
+        XCTAssertEqual(try store.byID(b.id)?.state, .queued)
 
         mgr.handle(.finished(recordID: a.id, finalURL: URL(fileURLWithPath: "/tmp/a")))
-        XCTAssertEqual(store.byID(a.id)?.state, .completed)
-        XCTAssertEqual(store.byID(b.id)?.state, .downloading)   // b 自动拉起
+        XCTAssertEqual(try store.byID(a.id)?.state, .completed)
+        XCTAssertEqual(try store.byID(b.id)?.state, .downloading)   // b 自动拉起
         XCTAssertEqual(runner.started.count, 2)
 
         mgr.handle(.failed(recordID: b.id, errorMessage: "boom", resumeData: nil))
-        XCTAssertEqual(store.byID(b.id)?.state, .failed)
-        XCTAssertFalse(store.all().isEmpty)
+        XCTAssertEqual(try store.byID(b.id)?.state, .failed)
+        XCTAssertFalse(try store.all().isEmpty)
     }
 
     // MARK: P2.6 暂停捕获续传凭证 + 续传重启
@@ -96,17 +96,17 @@ final class P2Tests: XCTestCase {
         let runner = StubDownloadRunner()
         let mgr = DownloadManager(store: store, runner: runner, maxConcurrent: 1)
         let a = try mgr.enqueue(url: "https://x.com/a", fileName: "a.bin")
-        XCTAssertEqual(store.byID(a.id)?.state, .downloading)
+        XCTAssertEqual(try store.byID(a.id)?.state, .downloading)
 
         mgr.pause(a)
-        XCTAssertEqual(store.byID(a.id)?.state, .paused)
+        XCTAssertEqual(try store.byID(a.id)?.state, .paused)
         // 模拟取消产生的续传凭证（经 .failed 事件回收）
         mgr.handle(.failed(recordID: a.id, errorMessage: "cancelled", resumeData: Data([1, 2, 3])))
-        XCTAssertEqual(store.byID(a.id)?.state, .paused)        // 暂停不被失败覆盖
-        XCTAssertEqual(store.byID(a.id)?.resumeData, Data([1, 2, 3]))
+        XCTAssertEqual(try store.byID(a.id)?.state, .paused)        // 暂停不被失败覆盖
+        XCTAssertEqual(try store.byID(a.id)?.resumeData, Data([1, 2, 3]))
 
         mgr.resume(a)
-        XCTAssertEqual(store.byID(a.id)?.state, .downloading)
+        XCTAssertEqual(try store.byID(a.id)?.state, .downloading)
         XCTAssertEqual(runner.started.last?.resumeData, Data([1, 2, 3]))
     }
 

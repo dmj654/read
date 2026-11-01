@@ -1,4 +1,5 @@
 import XCTest
+@testable import ReadingApp
 
 /// P0.1 冒烟测试：验证工程骨架、基础类型与编译链路。
 final class ReadingAppTests: XCTestCase {
