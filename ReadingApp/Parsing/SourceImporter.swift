@@ -14,7 +14,15 @@ enum SourceImporterError: Error, Equatable {
 /// - `ruleSearch/ruleBookInfo/ruleToc/ruleContent`：可为 String 或 Object（Object 序列化为 JSON 字符串）
 enum SourceImporter {
     static func `import`(json: Data) throws -> SourceRule {
-        guard let obj = try JSONSerialization.jsonObject(with: json) as? [String: Any] else {
+        // JSONSerialization 自身会抛 NSCocoaError，对外统一收敛为 invalidJSON，
+        // 便于调用方只处理一种错误类型。
+        let raw: Any
+        do {
+            raw = try JSONSerialization.jsonObject(with: json)
+        } catch {
+            throw SourceImporterError.invalidJSON
+        }
+        guard let obj = raw as? [String: Any] else {
             throw SourceImporterError.invalidJSON
         }
 

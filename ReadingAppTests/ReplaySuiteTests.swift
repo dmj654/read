@@ -58,8 +58,10 @@ final class ReplaySuiteTests: XCTestCase {
         ReplayCase(name: "content-xpath-p", category: "content",
                    html: "<div id=\"content\"><p>a</p><p>b</p><p>c</p></div>",
                    rule: "//div[@id=\"content\"]/p", expected: ["a", "b", "c"]),
+        // `##` 后接空串表示「把匹配到的内容替换为空」，只做正则替换、不剥离标签；
+        // 因此样例本身不带 <p>，聚焦验证注释剔除。
         ReplayCase(name: "content-regex-strip-comment", category: "content",
-                   html: "<p>Hello<!--c-->World</p>",
+                   html: "Hello<!--c-->World",
                    rule: "<!--.*?-->##", expected: ["HelloWorld"]),
         ReplayCase(name: "content-js-transform", category: "content",
                    html: "  spaced  ",

@@ -49,13 +49,17 @@ final class BookTests: XCTestCase {
         XCTAssertNil(result.sourceID)
     }
 
-    /// 唯一 id 约束：重复 id 插入应使 save 抛错。
+    /// 唯一 id 约束：SwiftData 对 `@Attribute(.unique)` 采用 **upsert** 语义——
+    /// 重复 id 再次插入不会抛错，而是合并为同一条记录。
+    /// 这里断言「不抛错且不会产生第二行」，防止该约束失效（失效时会出现两条 dup）。
     func testUniqueIdConstraint() throws {
         let container = try makeInMemoryContainer()
         let context = ModelContext(container)
         context.insert(Book(id: "dup", title: "A"))
         try context.save()
         context.insert(Book(id: "dup", title: "B"))
-        XCTAssertThrowsError(try context.save())
+        XCTAssertNoThrow(try context.save())
+        let all = try context.fetch(FetchDescriptor<Book>())
+        XCTAssertEqual(all.filter { $0.id == "dup" }.count, 1, "唯一约束失效：出现了重复 id 记录")
     }
 }

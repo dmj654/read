@@ -44,10 +44,15 @@ struct DownloadFileManager: FileStoring {
         }
     }
 
-    /// 安全文件名：剔除路径分隔符与文件系统非法字符，空白降级为 UUID。
+    /// 安全文件名：剔除路径分隔符与文件系统非法字符，空白同样替换为下划线，
+    /// 连续下划线折叠为一个；全空时降级为 UUID。
     static func safeFileName(_ name: String) -> String {
         let invalid = CharacterSet(charactersIn: "/\\:*?\"<>|")
-        let cleaned = name.components(separatedBy: invalid).joined(separator: "_")
+            .union(.whitespacesAndNewlines)
+        var cleaned = name.components(separatedBy: invalid).joined(separator: "_")
+        while cleaned.contains("__") {
+            cleaned = cleaned.replacingOccurrences(of: "__", with: "_")
+        }
         return cleaned.isEmpty ? UUID().uuidString : cleaned
     }
 
