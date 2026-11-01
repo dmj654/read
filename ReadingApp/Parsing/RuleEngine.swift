@@ -226,7 +226,11 @@ enum RuleEngine {
         }
 
         trace("create-context")
-        guard let context = JSContext(virtualMachine: nil) else { return nil }
+        // 用无参 init 而不是 `JSContext(virtualMachine: nil)`：
+        // `initWithVirtualMachine:` 的头文件并未声明接受 nil，显式传 nil 依赖实现细节；
+        // 无参 init 走的是「新建默认 VM」这条完全公开的路径。
+        guard let context = JSContext() else { return nil }
+        trace("context-ready")
 
         // 关键：未设置 `exceptionHandler` 时，脚本的语法/运行时错误会以 **Objective-C 异常**
         // 的形式从 `evaluateScript` 抛出。Swift 无法 catch ObjC 异常，进程会直接崩溃
@@ -234,12 +238,12 @@ enum RuleEngine {
         // 设置处理器后，出错时 `evaluateScript` 返回 nil。
         //
         // 注意：处理器里**不要**再调用 `exception?.toString()` —— 那会在异常展开过程中
-        // 重新进入 JSC 求值，属于已知的危险重入点（解码异常消息会附带调用栈，
-        // 在本就处于错误状态的 VM 上可能再次触发异常）。这里只记录失败标志。
+        // 重新进入 JSC 求值，属于已知的危险重入点。这里只记录失败标志。
         var jsFailed = false
         context.exceptionHandler = { _, _ in
             jsFailed = true
         }
+        trace("handler-set")
 
         trace("bind-result")
         context.setObject(result, forKeyedSubscript: "result" as NSString)

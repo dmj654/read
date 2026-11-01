@@ -134,6 +134,29 @@ jobs:
           echo "== Archive 产物 =="
           ls -la build/ReadingApp.xcarchive/Products/Applications
 
+      # ────────────────────────────────────────────── 崩溃诊断（仅失败时）
+      - name: 收集崩溃报告（失败时）
+        if: failure()
+        run: |
+          set -uo pipefail
+          # 模拟器里的 App 崩溃，实际是宿主机上的一个 arm64 进程崩溃，
+          # 报告会落在宿主 ~/Library/Logs/DiagnosticReports/*.ips。
+          # xcresult 里不含崩溃堆栈，只能从这里拿。
+          DIR="$HOME/Library/Logs/DiagnosticReports"
+          mkdir -p build/reports/crash
+          echo "== $DIR =="
+          ls -lat "$DIR" 2>/dev/null | head -20 || echo "目录不存在"
+          find "$DIR" -name '*.ips' -mmin -60 2>/dev/null | head -8 | while read -r f; do
+            echo ""
+            echo "===== $(basename "$f") ====="
+            # .ips 是「一行 JSON 头 + 一段 JSON 体」，直接全打，堆栈在 threads 里
+            head -c 60000 "$f" || true
+            echo ""
+            cp "$f" build/reports/crash/ 2>/dev/null || true
+          done
+          echo "== 已收集 =="
+          ls -la build/reports/crash || true
+
       # ────────────────────────────────────────────────── 导出 IPA
       - name: 导出 IPA（未签名）
         run: |

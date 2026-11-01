@@ -78,7 +78,7 @@ final class RuleEngineTests: XCTestCase {
     /// `testJSCEnvironmentProbe` 排在 `testJSInvalidDoesNotCrash` 之前，
     /// 因此一旦崩溃发生在探针之后，就说明 JSC 本身能跑，问题在规则引擎这一侧。
     func testJSCEnvironmentProbe() {
-        guard let context = JSContext(virtualMachine: nil) else {
+        guard let context = JSContext() else {
             XCTFail("JavaScriptCore 无法创建 JSContext（该 runtime 上 JSC 不可用）")
             return
         }
